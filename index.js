@@ -15,7 +15,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+    res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range');
     if (req.method === 'OPTIONS') {
         res.sendStatus(200);
     } else {
@@ -948,10 +948,10 @@ app.get('/api/sources/:movieId', async (req, res) => {
     }
 });
 
-// Download proxy endpoint - adds proper headers to bypass CDN restrictions
+// Download proxy endpoint with HTTP Range support for progressive streaming
 app.get('/api/download/*', async (req, res) => {
     try {
-        const downloadUrl = decodeURIComponent(req.url.replace('/api/download/', '')); // Get and decode the URL
+        const downloadUrl = decodeURIComponent(req.url.replace('/api/download/', ''));
         
         if (!downloadUrl || (!downloadUrl.startsWith('https://bcdnw.hakunaymatata.com/') && !downloadUrl.startsWith('https://valiw.hakunaymatata.com/'))) {
             return res.status(400).json({
@@ -960,38 +960,94 @@ app.get('/api/download/*', async (req, res) => {
             });
         }
         
-        console.log(`Proxying download: ${downloadUrl}`);
+        console.log(`Proxying download with range support: ${downloadUrl}`);
         
-        // Make request with proper headers that allow CDN access
+        // Headers to forward to the CDN
+        const headers = {
+            'User-Agent': 'okhttp/4.12.0',
+            'Referer': 'https://fmoviesunblocked.net/',
+            'Origin': 'https://fmoviesunblocked.net',
+            'Accept': '*/*',
+            'Accept-Encoding': 'identity' // Important: disable gzip for video streaming
+        };
+        
+        // Forward the Range header if present
+        if (req.headers.range) {
+            headers['Range'] = req.headers.range;
+            console.log(`Forwarding range request: ${req.headers.range}`);
+        }
+        
+        // Make the request to CDN
         const response = await axios({
             method: 'GET',
             url: downloadUrl,
             responseType: 'stream',
-            headers: {
-                'User-Agent': 'okhttp/4.12.0',
-                'Referer': 'https://fmoviesunblocked.net/',
-                'Origin': 'https://fmoviesunblocked.net'
+            headers: headers,
+            timeout: 30000
+        });
+        
+        // Handle successful response
+        if (response.status === 200 || response.status === 206) {
+            // Set appropriate headers for streaming
+            res.set({
+                'Content-Type': response.headers['content-type'],
+                'Cache-Control': 'public, max-age=3600',
+                'Accept-Ranges': 'bytes',
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Headers': 'Range'
+            });
+            
+            // Handle partial content (206)
+            if (response.status === 206 && response.headers['content-range']) {
+                res.status(206);
+                res.set('Content-Range', response.headers['content-range']);
+                res.set('Content-Length', response.headers['content-length']);
+                console.log(`Serving partial content: ${response.headers['content-range']}`);
+            } 
+            // Handle full content (200)
+            else if (response.status === 200 && response.headers['content-length']) {
+                res.status(200);
+                res.set('Content-Length', response.headers['content-length']);
+                console.log(`Serving full content, length: ${response.headers['content-length']}`);
             }
-        });
-        
-        // Forward the content-type and other relevant headers
-        res.set({
-            'Content-Type': response.headers['content-type'],
-            'Content-Length': response.headers['content-length'],
-            'Content-Disposition': `attachment; filename="movie.mp4"`
-        });
-        
-        // Pipe the video stream to the response
-        response.data.pipe(res);
+            
+            // Pipe the video stream to response
+            response.data.pipe(res);
+            
+            // Handle stream errors
+            response.data.on('error', (error) => {
+                console.error('Stream error:', error.message);
+                if (!res.headersSent) {
+                    res.status(500).json({
+                        status: 'error',
+                        message: 'Stream error occurred'
+                    });
+                }
+            });
+            
+        } else {
+            throw new Error(`Unexpected response status: ${response.status}`);
+        }
         
     } catch (error) {
         console.error('Download proxy error:', error.message);
-        res.status(500).json({
-            status: 'error',
-            message: 'Failed to proxy download',
-            error: error.message
-        });
+        
+        if (!res.headersSent) {
+            res.status(500).json({
+                status: 'error',
+                message: 'Failed to proxy download',
+                error: error.message
+            });
+        }
     }
+});
+
+// Add CORS support for range requests
+app.options('/api/download/*', (req, res) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Range');
+    res.status(200).send();
 });
 
 // Error handling middleware
