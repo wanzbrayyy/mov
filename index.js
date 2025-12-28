@@ -1,7 +1,7 @@
-const express = require('express');
-const axios = require('axios');
-const { wrapper } = require('axios-cookiejar-support');
-const { CookieJar } = require('tough-cookie');
+import express from 'express';
+import axios from 'axios';
+import { wrapper } from 'axios-cookiejar-support';
+import { CookieJar } from 'tough-cookie';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -168,7 +168,7 @@ app.get('/api/sources/:movieId', async (req, res) => {
         
         const response = await makeApiRequestWithCookies(`${HOST_URL}/wefeed-h5-bff/web/subject/download`, {
             method: 'GET',
-            params: { subjectId: movieId, se: season, ep: episode }, // Note: se/ep parameters
+            params: { subjectId: movieId, se: season, ep: episode },
             headers: {
                 'Referer': refererUrl,
                 'Origin': 'https://fmoviesunblocked.net',
@@ -259,8 +259,11 @@ app.get('/api/download', async (req, res) => {
     }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`MovieBox API running on port ${PORT}`);
-});
+// Untuk deployment lokal
+if (import.meta.url === `file://${process.argv[1]}`) {
+    app.listen(PORT, '0.0.0.0', () => {
+        console.log(`MovieBox API running on port ${PORT}`);
+    });
+}
 
-module.exports = app;
+export default app;
