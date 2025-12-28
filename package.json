@@ -3,7 +3,6 @@
   "version": "1.0.0",
   "description": "MovieBox API Proxy",
   "main": "index.js",
-  "type": "module",
   "engines": {
     "node": ">=20.x"
   },
