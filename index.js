@@ -1,3 +1,5 @@
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 const express = require('express');
 const axios = require('axios');
 const { wrapper } = require('axios-cookiejar-support');
@@ -5,6 +7,16 @@ const { CookieJar } = require('tough-cookie');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// Daftar Mirror MovieBox (Jika satu 403, pindah ke yang lain)
+const MIRRORS = [
+    "https://www.moviebox.ph",
+    "https://moviebox.pk",
+    "https://h5.aoneroom.com",
+    "https://api.moviebox.ph"
+];
+
+let currentMirrorIndex = 0;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -21,50 +33,79 @@ app.use((req, res, next) => {
     }
 });
 
-const HOST_URL = "https://h5.aoneroom.com";
-
-const DEFAULT_HEADERS = {
-    'X-Client-Info': '{"timezone":"Africa/Nairobi"}',
-    'Accept-Language': 'en-US,en;q=0.5',
-    'Accept': 'application/json',
-    'User-Agent': 'okhttp/4.12.0',
-    'Referer': HOST_URL,
-    'Connection': 'keep-alive'
+// Header yang lebih "Jujur" agar tidak dianggap bot berbahaya
+const getBaseHeaders = () => {
+    return {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Connection': 'keep-alive',
+        'Sec-Fetch-Dest': 'empty',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Site': 'same-origin',
+        'Origin': MIRRORS[currentMirrorIndex],
+        'Referer': `${MIRRORS[currentMirrorIndex]}/`
+    };
 };
 
 const jar = new CookieJar();
 const client = wrapper(axios.create({
     jar,
     withCredentials: true,
-    timeout: 30000,
-    headers: DEFAULT_HEADERS
+    timeout: 15000
 }));
 
-let isSessionInit = false;
+// Fungsi Pintar: Coba request, jika 403 ganti mirror otomatis
+async function fetchSmart(path, options = {}) {
+    let attempt = 0;
+    const maxAttempts = MIRRORS.length;
 
+    while (attempt < maxAttempts) {
+        const baseUrl = MIRRORS[currentMirrorIndex];
+        const url = `${baseUrl}/wefeed-h5-bff${path}`;
+        
+        try {
+            const config = {
+                ...options,
+                headers: {
+                    ...getBaseHeaders(),
+                    ...(options.headers || {})
+                }
+            };
+            
+            const { data } = await client(url, config);
+            return data.data || data;
+
+        } catch (error) {
+            // Hanya ganti mirror jika errornya 403 (Forbidden) atau Network Error
+            if (!error.response || error.response.status === 403 || error.response.status >= 500) {
+                console.log(`Mirror ${baseUrl} failed (${error.response?.status || 'Net'}). Switching...`);
+                currentMirrorIndex = (currentMirrorIndex + 1) % MIRRORS.length;
+                attempt++;
+            } else {
+                // Jika error 404 atau 400, berarti memang datanya tidak ada (jangan retry)
+                throw error;
+            }
+        }
+    }
+    throw new Error("All mirrors failed. Service is currently unavailable.");
+}
+
+// Init Session (Pancingan awal)
 async function initSession() {
-    if (isSessionInit) return;
     try {
-        await client.get(`${HOST_URL}/wefeed-h5-bff/app/get-latest-app-pkgs?app_name=moviebox`);
-        isSessionInit = true;
-    } catch (error) {
-        console.error('Session init failed:', error.message);
+        await fetchSmart('/app/get-latest-app-pkgs?app_name=moviebox');
+    } catch (e) {
+        // Ignore init errors
     }
 }
 
-async function fetchAPI(url, options = {}) {
-    await initSession();
-    try {
-        const { data } = await client(url, options);
-        return data.data || data;
-    } catch (error) {
-        throw error;
-    }
-}
+// --- ENDPOINTS ---
 
 app.get('/api/homepage', async (req, res) => {
     try {
-        const data = await fetchAPI(`${HOST_URL}/wefeed-h5-bff/web/home`);
+        await initSession();
+        const data = await fetchSmart('/web/home');
         res.json({ status: 'success', data });
     } catch (error) {
         res.status(500).json({ status: 'error', message: error.message });
@@ -75,7 +116,7 @@ app.get('/api/trending', async (req, res) => {
     try {
         const page = parseInt(req.query.page) || 0;
         const perPage = parseInt(req.query.perPage) || 18;
-        const data = await fetchAPI(`${HOST_URL}/wefeed-h5-bff/web/subject/trending`, {
+        const data = await fetchSmart('/web/subject/trending', {
             params: { page, perPage, uid: '5591179548772780352' }
         });
         res.json({ status: 'success', data });
@@ -91,7 +132,7 @@ app.get('/api/search/:query', async (req, res) => {
         const perPage = parseInt(req.query.perPage) || 24;
         const subjectType = parseInt(req.query.type) || 0;
 
-        const data = await fetchAPI(`${HOST_URL}/wefeed-h5-bff/web/subject/search`, {
+        const data = await fetchSmart('/web/subject/search', {
             method: 'POST',
             data: { keyword: query, page, perPage, subjectType }
         });
@@ -112,7 +153,7 @@ app.get('/api/search/:query', async (req, res) => {
 app.get('/api/info/:movieId', async (req, res) => {
     try {
         const { movieId } = req.params;
-        const data = await fetchAPI(`${HOST_URL}/wefeed-h5-bff/web/subject/detail`, {
+        const data = await fetchSmart('/web/subject/detail', {
             params: { subjectId: movieId }
         });
 
@@ -131,24 +172,27 @@ app.get('/api/sources/:movieId', async (req, res) => {
         const { movieId } = req.params;
         const season = parseInt(req.query.season) || 0;
         const episode = parseInt(req.query.episode) || 0;
-        const protocol = req.protocol;
-        const host = req.get('host');
+        
+        const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+        const host = req.headers['host'];
 
-        const info = await fetchAPI(`${HOST_URL}/wefeed-h5-bff/web/subject/detail`, {
+        // 1. Get Info for Path
+        const info = await fetchSmart('/web/subject/detail', {
             params: { subjectId: movieId }
         });
 
         const detailPath = info?.subject?.detailPath || '';
-        const refererUrl = `https://fmoviesunblocked.net/spa/videoPlayPage/movies/${detailPath}?id=${movieId}&type=/movie/detail`;
-
-        const data = await fetchAPI(`${HOST_URL}/wefeed-h5-bff/web/subject/download`, {
+        
+        // 2. Get Downloads (Bypass Referer check using fmovies host)
+        const data = await fetchSmart('/web/subject/download', {
             params: { subjectId: movieId, se: season, ep: episode },
             headers: {
-                'Referer': refererUrl,
+                'Referer': `https://fmoviesunblocked.net/spa/videoPlayPage/movies/${detailPath}?id=${movieId}&type=/movie/detail`,
                 'Origin': 'https://fmoviesunblocked.net'
             }
         });
 
+        // 3. Process Links
         const processedSources = (data.downloads || []).map(file => ({
             id: file.id,
             quality: parseInt(file.resolution) || 0,
@@ -175,7 +219,7 @@ app.get('/api/download/*', async (req, res) => {
         const range = req.headers.range;
 
         const headers = {
-            'User-Agent': 'okhttp/4.12.0',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
             'Referer': 'https://fmoviesunblocked.net/',
             'Origin': 'https://fmoviesunblocked.net',
             'Accept': '*/*'
@@ -188,6 +232,7 @@ app.get('/api/download/*', async (req, res) => {
             url: downloadUrl,
             responseType: 'stream',
             headers,
+            timeout: 60000,
             validateStatus: status => status >= 200 && status < 300
         });
 
@@ -207,7 +252,11 @@ app.get('/api/download/*', async (req, res) => {
         response.data.pipe(res);
 
         response.data.on('error', () => res.end());
-        res.on('close', () => response.data.destroy());
+        res.on('close', () => {
+            if (response.data && typeof response.data.destroy === 'function') {
+                response.data.destroy();
+            }
+        });
 
     } catch (error) {
         if (!res.headersSent) {
