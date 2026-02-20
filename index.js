@@ -8,7 +8,6 @@ const { CookieJar } = require('tough-cookie');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Daftar Mirror MovieBox (Jika satu 403, pindah ke yang lain)
 const MIRRORS = [
     "https://www.moviebox.ph",
     "https://moviebox.pk",
@@ -26,23 +25,16 @@ app.use((req, res, next) => {
     res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, Range');
     res.header('Access-Control-Expose-Headers', 'Content-Length, Content-Range');
-    if (req.method === 'OPTIONS') {
-        res.sendStatus(200);
-    } else {
-        next();
-    }
+    if (req.method === 'OPTIONS') return res.sendStatus(200);
+    next();
 });
 
-// Header yang lebih "Jujur" agar tidak dianggap bot berbahaya
 const getBaseHeaders = () => {
     return {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
         'Connection': 'keep-alive',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-origin',
         'Origin': MIRRORS[currentMirrorIndex],
         'Referer': `${MIRRORS[currentMirrorIndex]}/`
     };
@@ -55,10 +47,10 @@ const client = wrapper(axios.create({
     timeout: 15000
 }));
 
-// Fungsi Pintar: Coba request, jika 403 ganti mirror otomatis
 async function fetchSmart(path, options = {}) {
     let attempt = 0;
     const maxAttempts = MIRRORS.length;
+    let lastError = null;
 
     while (attempt < maxAttempts) {
         const baseUrl = MIRRORS[currentMirrorIndex];
@@ -77,34 +69,17 @@ async function fetchSmart(path, options = {}) {
             return data.data || data;
 
         } catch (error) {
-            // Hanya ganti mirror jika errornya 403 (Forbidden) atau Network Error
-            if (!error.response || error.response.status === 403 || error.response.status >= 500) {
-                console.log(`Mirror ${baseUrl} failed (${error.response?.status || 'Net'}). Switching...`);
-                currentMirrorIndex = (currentMirrorIndex + 1) % MIRRORS.length;
-                attempt++;
-            } else {
-                // Jika error 404 atau 400, berarti memang datanya tidak ada (jangan retry)
-                throw error;
-            }
+            lastError = error;
+            currentMirrorIndex = (currentMirrorIndex + 1) % MIRRORS.length;
+            attempt++;
         }
     }
-    throw new Error("All mirrors failed. Service is currently unavailable.");
+    
+    throw lastError;
 }
-
-// Init Session (Pancingan awal)
-async function initSession() {
-    try {
-        await fetchSmart('/app/get-latest-app-pkgs?app_name=moviebox');
-    } catch (e) {
-        // Ignore init errors
-    }
-}
-
-// --- ENDPOINTS ---
 
 app.get('/api/homepage', async (req, res) => {
     try {
-        await initSession();
         const data = await fetchSmart('/web/home');
         res.json({ status: 'success', data });
     } catch (error) {
@@ -176,14 +151,12 @@ app.get('/api/sources/:movieId', async (req, res) => {
         const protocol = req.headers['x-forwarded-proto'] || req.protocol;
         const host = req.headers['host'];
 
-        // 1. Get Info for Path
         const info = await fetchSmart('/web/subject/detail', {
             params: { subjectId: movieId }
         });
 
         const detailPath = info?.subject?.detailPath || '';
         
-        // 2. Get Downloads (Bypass Referer check using fmovies host)
         const data = await fetchSmart('/web/subject/download', {
             params: { subjectId: movieId, se: season, ep: episode },
             headers: {
@@ -192,7 +165,6 @@ app.get('/api/sources/:movieId', async (req, res) => {
             }
         });
 
-        // 3. Process Links
         const processedSources = (data.downloads || []).map(file => ({
             id: file.id,
             quality: parseInt(file.resolution) || 0,
@@ -250,7 +222,6 @@ app.get('/api/download/*', async (req, res) => {
         }
 
         response.data.pipe(res);
-
         response.data.on('error', () => res.end());
         res.on('close', () => {
             if (response.data && typeof response.data.destroy === 'function') {
