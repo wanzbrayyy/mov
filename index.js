@@ -40,6 +40,8 @@ const getApiHeaders = (refererUrl = null) => {
         'X-Forwarded-For': ip,
         'CF-Connecting-IP': ip,
         'X-Real-IP': ip,
+        'Client-IP': ip,
+        'True-Client-IP': ip,
         'Host': MIRRORS[currentMirrorIndex].replace('https://', '')
     };
     
@@ -77,14 +79,19 @@ async function fetchSmart(path, options = {}) {
             };
             
             const { data } = await client(url, config);
+            if (typeof data === 'string' && (data.includes('Internet Positif') || data.includes('Situs web yang coba kamu akses diblokir') || data.includes('blocked'))) {
+                 throw new Error("Blocked Page Detected");
+            }
             return data.data || data;
 
         } catch (error) {
             lastError = error;
+            console.error(`Mirror ${baseUrl} failed (${error.response?.status || error.message || 'Net Error'}). Switching to next mirror...`);
             currentMirrorIndex = (currentMirrorIndex + 1) % MIRRORS.length;
             attempt++;
         }
     }
+    
     throw lastError;
 }
 
