@@ -9,9 +9,9 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 const MIRRORS = [
-    "https://www.moviebox.ph",
-    "https://moviebox.pk",
     "https://h5.aoneroom.com",
+    "https://moviebox.pk",
+    "https://www.moviebox.ph",
     "https://api.moviebox.ph"
 ];
 
@@ -29,15 +29,26 @@ app.use((req, res, next) => {
     next();
 });
 
-const getBaseHeaders = () => {
-    return {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Language': 'en-US,en;q=0.9',
+const getApiHeaders = (refererUrl = null) => {
+    const ip = Array(4).fill(0).map((_, i) => Math.floor(Math.random() * 255) + (i === 0 ? 1 : 0)).join('.');
+    const headers = {
+        'X-Client-Info': '{"timezone":"Africa/Nairobi"}',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept': 'application/json',
+        'User-Agent': 'okhttp/4.12.0',
         'Connection': 'keep-alive',
-        'Origin': MIRRORS[currentMirrorIndex],
-        'Referer': `${MIRRORS[currentMirrorIndex]}/`
+        'X-Forwarded-For': ip,
+        'CF-Connecting-IP': ip,
+        'X-Real-IP': ip,
+        'Host': MIRRORS[currentMirrorIndex].replace('https://', '')
     };
+    
+    if (refererUrl) {
+        headers['Referer'] = refererUrl;
+        headers['Origin'] = new URL(refererUrl).origin;
+    }
+    
+    return headers;
 };
 
 const jar = new CookieJar();
@@ -60,7 +71,7 @@ async function fetchSmart(path, options = {}) {
             const config = {
                 ...options,
                 headers: {
-                    ...getBaseHeaders(),
+                    ...getApiHeaders(options.customReferer),
                     ...(options.headers || {})
                 }
             };
@@ -74,7 +85,6 @@ async function fetchSmart(path, options = {}) {
             attempt++;
         }
     }
-    
     throw lastError;
 }
 
@@ -156,13 +166,11 @@ app.get('/api/sources/:movieId', async (req, res) => {
         });
 
         const detailPath = info?.subject?.detailPath || '';
+        const refererUrl = `https://fmoviesunblocked.net/spa/videoPlayPage/movies/${detailPath}?id=${movieId}&type=/movie/detail`;
         
         const data = await fetchSmart('/web/subject/download', {
             params: { subjectId: movieId, se: season, ep: episode },
-            headers: {
-                'Referer': `https://fmoviesunblocked.net/spa/videoPlayPage/movies/${detailPath}?id=${movieId}&type=/movie/detail`,
-                'Origin': 'https://fmoviesunblocked.net'
-            }
+            customReferer: refererUrl
         });
 
         const processedSources = (data.downloads || []).map(file => ({
