@@ -197,13 +197,20 @@ app.get('/api/sources/:movieId', async (req, res) => {
     }
 });
 
+// ... (bagian atas sebelum try)
+
 app.get('/api/download/*', async (req, res) => {
     try {
         const rawUrl = req.params[0];
-        if (!rawUrl) return res.status(400).json({ status: 'error', message: 'Missing URL' });
+        if (!rawUrl) {
+            console.error("Download request error: Missing URL");
+            return res.status(400).json({ status: 'error', message: 'Missing URL' });
+        }
 
         const downloadUrl = decodeURIComponent(rawUrl);
         const range = req.headers.range;
+
+        console.log(`Proxying request to: ${downloadUrl} with Range: ${range}`); // Tambahkan log ini
 
         const headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -223,6 +230,8 @@ app.get('/api/download/*', async (req, res) => {
             validateStatus: status => status >= 200 && status < 300
         });
 
+        console.log(`Proxied request status: ${response.status}`); // Log status response dari CDN
+
         const head = {
             'Content-Type': response.headers['content-type'] || 'video/mp4',
             'Content-Length': response.headers['content-length'],
@@ -237,19 +246,27 @@ app.get('/api/download/*', async (req, res) => {
         }
 
         response.data.pipe(res);
-        response.data.on('error', () => res.end());
-        res.on('close', () => {
+
+        response.data.on('error', (streamError) => { // Tangkap error stream
+            console.error('Stream error:', streamError.message);
+            if (!res.headersSent) res.status(500).json({ status: 'error', message: 'Stream error occurred' });
+        });
+        
+        res.on('close', () => { // Handle client disconnect
+            console.log('Client disconnected from stream');
             if (response.data && typeof response.data.destroy === 'function') {
                 response.data.destroy();
             }
         });
 
     } catch (error) {
+        console.error('Download proxy error:', error.message); // Log error utama
         if (!res.headersSent) {
-            res.status(500).json({ status: 'error', message: 'Stream failed' });
+            res.status(500).json({ status: 'error', message: 'Failed to proxy download', details: error.message });
         }
     }
 });
+// ... (bagian akhir file)
 
 app.use((req, res) => {
     res.status(404).json({ status: 'error', message: 'Endpoint not found' });
